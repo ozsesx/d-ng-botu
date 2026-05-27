@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import asdict
+from pathlib import Path
+
+# Streamlit Cloud: repo kökünü Python yoluna ekle
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -9,12 +16,21 @@ import numpy as np
 
 import plotly.graph_objects as go
 
-from src.binance_api import top_usdt_perp_by_quote_volume
-from src.config import Multipliers
-from src.engine import RadarEngine
-from src.analytics import apply_tempo_multipliers, compute_step_strength, next_transition_hint, strength_to_rgb
-from src.db import RadarDB
-from src.memory import compute_6m_divergence, ingest_last_6_months_daily
+# GitHub'da dosyalar src/ içinde VEYA repo kökünde olabilir (ikisini de destekle)
+if (_ROOT / "src" / "binance_api.py").exists():
+    from src.binance_api import top_usdt_perp_by_quote_volume
+    from src.config import Multipliers
+    from src.engine import RadarEngine
+    from src.analytics import apply_tempo_multipliers, compute_step_strength, next_transition_hint, strength_to_rgb
+    from src.db import RadarDB
+    from src.memory import compute_6m_divergence, ingest_last_6_months_daily
+else:
+    from binance_api import top_usdt_perp_by_quote_volume
+    from config import Multipliers
+    from engine import RadarEngine
+    from analytics import apply_tempo_multipliers, compute_step_strength, next_transition_hint, strength_to_rgb
+    from db import RadarDB
+    from memory import compute_6m_divergence, ingest_last_6_months_daily
 
 
 WINDOW_PRESETS = {
@@ -73,11 +89,11 @@ def calc_contract_size_usdt(kasa_tl: float, risk_tl: float, leverage: float) -> 
 def universe_from_ui() -> list[str]:
     mode = st.session_state.universe_mode
     if mode == "Top 80 (24h hacim)":
-        return top_usdt_perp_by_quote_volume(80)
+        return get_cached_universe(80)
     # manuel
     raw = st.session_state.symbols_text.strip()
     if not raw:
-        return top_usdt_perp_by_quote_volume(80)
+        return get_cached_universe(80)
     parts = []
     for line in raw.replace(",", "\n").splitlines():
         s = line.strip().lower()
@@ -97,6 +113,16 @@ def universe_from_ui() -> list[str]:
         if len(out) >= 80:
             break
     return out
+
+
+def get_cached_universe(limit: int = 80) -> list[str]:
+    """Binance REST her 4 sn'de çağrılmasın; hata olursa sabit listeye düş."""
+    cache_key = f"universe_{limit}"
+    if cache_key not in st.session_state:
+        symbols, source = top_usdt_perp_by_quote_volume(limit)
+        st.session_state[cache_key] = symbols
+        st.session_state["universe_source"] = source
+    return st.session_state[cache_key]
 
 
 def apply_global_config(engine: RadarEngine) -> None:
@@ -236,6 +262,11 @@ def main() -> None:
                 st.metric("Açılması Gereken Kontrat Büyüklüğü (USDT)", f"{usdt:,.0f}")
 
         snap = engine.get_snapshot()
+        if st.session_state.get("universe_source") == "fallback":
+            st.info(
+                "Binance REST API bu sunucudan engellendi (Streamlit Cloud ABD IP). "
+                "80 coin sabit listeden yüklendi; canlı websocket verisi gelmeye devam edebilir."
+            )
         if snap.last_tick_age_s > 15:
             st.warning(f"Websocket verisi gecikiyor (son tick: {snap.last_tick_age_s:.0f}s).")
 
